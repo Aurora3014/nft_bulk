@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 import dotenv from 'dotenv';
 dotenv.config();
@@ -14,10 +15,9 @@ import TelegramBot from 'node-telegram-bot-api';
 import { initRedisClient } from './ton-connect/storage';
 import { walletMenuCallbacks } from './connect-wallet-menu';
 import { Address, Cell, beginCell, toNano } from '@ton/ton';
-import { getConnector } from './ton-connect/connector';
 import bulkSend from './wallet/tx_send';
 import { transferNftTxBuilder } from './wallet/nft_tx_builder';
-import { getNFTInfo } from './utils';
+import { getNFTInfo, getNameFromAddress } from './utils';
 
 console.log('========> build end <=========');
 
@@ -89,6 +89,10 @@ async function main(): Promise<void> {
         if (!!!user) return;
         //Price input part, prev state is buy/sellNFT
         if (user!.state.state === 'buyNFT' || user!.state.state === 'sellNFT') {
+            if (!Address.isFriendly(msg.text!)) {
+                bot.sendMessage(msg.chat.id, 'Invalid address type');
+                return;
+            }
             user!.state.nftColCA = msg.text!;
 
             await bot.sendPhoto(msg.chat.id, './imgpsh_fullsize_anim.png', {
@@ -115,7 +119,51 @@ Please type in price of NFT`,
 
 Please type in amount of NFT`,
                 reply_markup: {
-                    inline_keyboard: [[{ text: '<< Back', callback_data: 'newStart' }]]
+                    inline_keyboard: [
+                        [
+                            {
+                                text: '1',
+                                callback_data: JSON.stringify({ method: 'doBuySell', data: 1 })
+                            },
+                            {
+                                text: '2',
+                                callback_data: JSON.stringify({ method: 'doBuySell', data: 2 })
+                            },
+                            {
+                                text: '3',
+                                callback_data: JSON.stringify({ method: 'doBuySell', data: 3 })
+                            }
+                        ],
+                        [
+                            {
+                                text: '4',
+                                callback_data: JSON.stringify({ method: 'doBuySell', data: 4 })
+                            },
+                            {
+                                text: '5',
+                                callback_data: JSON.stringify({ method: 'doBuySell', data: 5 })
+                            },
+                            {
+                                text: '10',
+                                callback_data: JSON.stringify({ method: 'doBuySell', data: 10 })
+                            }
+                        ],
+                        [
+                            {
+                                text: '20',
+                                callback_data: JSON.stringify({ method: 'doBuySell', data: 20 })
+                            },
+                            {
+                                text: '50',
+                                callback_data: JSON.stringify({ method: 'doBuySell', data: 50 })
+                            },
+                            {
+                                text: '100',
+                                callback_data: JSON.stringify({ method: 'doBuySell', data: 100 })
+                            }
+                        ],
+                        [{ text: '<< Back', callback_data: 'newStart' }]
+                    ]
                 },
                 parse_mode: 'Markdown'
             });
@@ -160,33 +208,64 @@ OR tx will be fail.`,
                 parse_mode: 'Markdown'
             });
         } else if (user!.state.state === 'withdraw') {
-            const amountTon = +msg.text!;
-            const connector = await getConnector(msg.chat.id!, false);
-            await connector.restoreConnection();
-            if (isNaN(amountTon)) {
-                bot.sendMessage(msg.chat!.id, 'Insufficent Price!');
+            if (!Address.isFriendly(msg.text!)) {
+                bot.sendMessage(msg.chat.id, 'Invalid Address, Please check your address again');
                 return;
             }
-            if (!connector.connected) {
-                bot.sendMessage(msg.chat!.id, 'Connect Wallet to Withdraw!');
+            user!.state.nftColCA = msg.text!;
+
+            user!.state.state = 'withdrawAddress';
+            await bot.sendMessage(msg.chat.id!, 'Please enter amount of ton to withdraw');
+        } else if (user!.state.state === 'withdrawAddress') {
+            let user = await getUserByTelegramID(msg.chat.id);
+            const amountTon = +msg.text!;
+            if (isNaN(amountTon)) {
+                bot.sendMessage(msg.chat!.id, 'Insufficent Price!');
                 return;
             }
             let internalMessages: Cell[] = [];
             internalMessages.push(
                 beginCell()
                     .storeUint(0x18, 6) // bounce
-                    .storeAddress(Address.parse(connector.wallet?.account.address!))
+                    .storeAddress(Address.parse(user!.state.nftColCA))
                     .storeCoins(amountTon * 10 ** 9)
                     .storeUint(0, 1 + 4 + 4 + 64 + 32)
                     .storeBit(0) // We do not have State Init
                     .storeBit(0) // We store Message Body as a reference
                     .endCell()
             );
-            await bulkSend(internalMessages, user.secretKey, user.walletAddress);
-            bot.sendMessage(msg.chat.id, `Tx is sent\nhttps://tonviewer.com/${user.walletAddress}`);
+            await bulkSend(internalMessages, user!.secretKey, user!.walletAddress);
+            bot.sendMessage(
+                msg.chat.id,
+                `Tx is sent\nhttps://tonviewer.com/${user!.walletAddress}`
+            );
             await handleStartCommand(msg);
         } else if (user!.state.state === 'withdrawNFT') {
+            if (!Address.isFriendly(msg.text!)) {
+                bot.sendMessage(msg.chat.id, 'Invalid Address, Please check your address again');
+                return;
+            }
+            let buttons: any[] = [];
             user!.state.dex = msg.text!;
+            const nftInfo = await getNFTInfo(user!.walletAddress);
+            for (const collectionRawAddress in nftInfo) {
+                let colName = await getNameFromAddress(
+                    Address.parseRaw(collectionRawAddress).toString()
+                );
+
+                buttons.push([
+                    {
+                        text:
+                            String(colName?.data.nftCollectionByAddress.name) +
+                            ` (${nftInfo[collectionRawAddress]?.items.length})`,
+                        callback_data: JSON.stringify({
+                            method: 'nftWithdrawAddress',
+                            data: colName?.data.nftCollectionByAddress.name
+                        })
+                    }
+                ]);
+            }
+            buttons.push([{ text: '<< Back', callback_data: 'newStart' }]);
 
             await bot.sendPhoto(msg.chat.id, './imgpsh_fullsize_anim.png', {
                 caption: `
@@ -194,7 +273,7 @@ OR tx will be fail.`,
 
 Please type in CA of NFT collection`,
                 reply_markup: {
-                    inline_keyboard: [[{ text: '<< Back', callback_data: 'newStart' }]]
+                    inline_keyboard: buttons
                 },
                 parse_mode: 'Markdown'
             });

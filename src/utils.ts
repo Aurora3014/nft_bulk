@@ -112,6 +112,34 @@ export async function getNFTInfo(address: string) {
     return nftStatus;
 }
 
+export async function getTopNFTCollection(first: number) {
+    const GET_NFT_COLLECTION_ITEMS = gql`
+        query MainPageTopCollection($kind: MPTopKind!, $first: Int!) {
+            mainPageTopCollection(kind: $kind, first: $first) {
+                items {
+                    collection {
+                        address
+                        name
+                    }
+                }
+            }
+        }
+    `;
+
+    return await runGraphQlQuery(GET_NFT_COLLECTION_ITEMS, { kind: 'all', first });
+}
+
+export async function getNameFromAddress(address: string) {
+    const GET_NFT_COLLECTION_ITEMS = gql`
+        query NftCollectionByAddress($address: String!) {
+            nftCollectionByAddress(address: $address) {
+                name
+            }
+        }
+    `;
+
+    return await runGraphQlQuery(GET_NFT_COLLECTION_ITEMS, { address });
+}
 // Get detailed object info from content field in NFT info.
 // By aurora
 export async function getDetailUri(uri: string) {

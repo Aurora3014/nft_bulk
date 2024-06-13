@@ -41,6 +41,12 @@ interface NftCollectionItems {
     items: NftItem[];
 }
 
+export interface NFTCollections {
+    collection: {
+        name: string;
+        address: string;
+    };
+}
 // Define the types for your query response
 export interface NFTCollection {
     yourQuery: {

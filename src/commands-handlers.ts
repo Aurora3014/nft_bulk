@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable unused-imports/no-unused-vars */
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { bot } from './bot';
@@ -7,6 +8,8 @@ import {
     delay,
     fetchNftItemsFromCollection,
     getNFTInfo,
+    getNameFromAddress,
+    getTopNFTCollection,
     replyMessage
 } from './utils';
 import { createUser, getUserByTelegramID, updateUserState, UserModel } from './ton-connect/mongo';
@@ -16,7 +19,7 @@ import mongoose from 'mongoose';
 import deployHighload from './wallet/deployWallet';
 import { getConnector } from './ton-connect/connector';
 import { getWalletInfo } from './ton-connect/wallets';
-import { NftItem } from './types';
+import { NFTCollections, NftItem } from './types';
 import { sendTransaction } from './wallet/v4r2wallet';
 import { Address, Cell, beginCell } from '@ton/core';
 import { saleNftTxBuilder } from './wallet/nft_tx_builder';
@@ -38,7 +41,11 @@ export const commandCallback = {
     showMyWallet: handleShowMyWalletCommand,
     withdraw: handleWithdrawCommand,
     withdrawNFT: handleWithdrawNFTCommand,
-    backup: handleBackupCommand
+    backup: handleBackupCommand,
+    topNFTCollectionBuy,
+    topNFTCollectionSell,
+    doBuySell,
+    nftWithdrawAddress
 };
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
@@ -130,23 +137,156 @@ export async function handleBuySellNFT(query: CallbackQuery, _: string) {
     user!.state.state = _;
     user!.state.isBuy = _ === 'buyNFT';
     await updateUserState(query.message?.chat.id!, user!.state);
-    let outputNFTstring: string = '';
-    const nftInfo = await getNFTInfo(user!.walletAddress);
-    for (const collectionRawAddress in nftInfo) {
-        outputNFTstring += `<code>${Address.parseRaw(
-            collectionRawAddress.toLowerCase()
-        ).toString()}</code>: ${nftInfo[collectionRawAddress]?.items.length} NFTs\n`;
+    let buttons: any[] = [];
+    if (_ === 'buyNFT') {
+        const topnft = await getTopNFTCollection(3);
+        const items: NFTCollections[] = topnft!.data.mainPageTopCollection.items;
+        let no = 0;
+        for (const nftCol of items) {
+            buttons.push([
+                {
+                    text: String(nftCol.collection.name),
+                    callback_data: JSON.stringify({
+                        method: 'topNFTCollectionBuy',
+                        data: no
+                    })
+                }
+            ]);
+            no++;
+            console.log(nftCol.collection.address!);
+        }
+    } else {
+        const nftInfo = await getNFTInfo(user!.walletAddress);
+        for (const collectionRawAddress in nftInfo) {
+            let colName = await getNameFromAddress(
+                Address.parseRaw(collectionRawAddress).toString()
+            );
+
+            buttons.push([
+                {
+                    text:
+                        String(colName?.data.nftCollectionByAddress.name) +
+                        ` (${nftInfo[collectionRawAddress]?.items.length})`,
+                    callback_data: JSON.stringify({
+                        method: 'topNFTCollectionSell',
+                        data: colName?.data.nftCollectionByAddress.name
+                    })
+                }
+            ]);
+        }
+        console.log(nftInfo, 'aasdf');
     }
+    buttons.push([{ text: '<< Back', callback_data: 'newStart' }]);
+    console.log(buttons);
     await replyMessage(
         query.message!,
         `📗 Buy NFT
         
 Please type in NFT Collection CA
-<a href="https://getgems.io/top-collections">Click here</a> to visit Getgems.io \n\n Your NFT balance in collection CA\n${outputNFTstring}`,
-        [[{ text: '<< Back', callback_data: 'newStart' }]]
+<a href="https://getgems.io/top-collections">Click here</a> to visit Getgems.io \n\n Your NFT balance in collection CA\n`,
+        buttons
     );
 }
 
+export async function topNFTCollectionSell(query: CallbackQuery, _: string) {
+    let user = await getUserByTelegramID(query.message!.chat!.id);
+
+    const nftInfo = await getNFTInfo(user!.walletAddress);
+    for (const collectionRawAddress in nftInfo) {
+        let colName = await getNameFromAddress(Address.parseRaw(collectionRawAddress).toString());
+        let strName = colName?.data.nftCollectionByAddress.name;
+        if (strName === _) {
+            user!.state.nftColCA = Address.parseRaw(collectionRawAddress).toString();
+
+            await bot.sendPhoto(query.message!.chat.id, './imgpsh_fullsize_anim.png', {
+                caption: `
+            *${user!.state.isBuy ? `📗` : `📕`} ${user!.state.state}*
+
+            Please type in price of NFT`,
+                reply_markup: {
+                    inline_keyboard: [[{ text: '<< Back', callback_data: 'newStart' }]]
+                },
+                parse_mode: 'Markdown'
+            });
+            //update state
+            user!.state.state = 'nftColCA';
+
+            await updateUserState(query.message!.chat!.id, user!.state);
+            break;
+        }
+    }
+}
+
+export async function topNFTCollectionBuy(query: CallbackQuery, _: string) {
+    let user = await getUserByTelegramID(query.message!.chat!.id);
+
+    const topnft = await getTopNFTCollection(3);
+    const items: NFTCollections[] = topnft!.data.mainPageTopCollection.items;
+    let no = 0;
+    for (const nftCol of items) {
+        if (+_ === no) {
+            let address = nftCol.collection.address;
+            user!.state.nftColCA = address;
+
+            await bot.sendPhoto(query.message!.chat.id, './imgpsh_fullsize_anim.png', {
+                caption: `
+            *${user!.state.isBuy ? `📗` : `📕`} ${user!.state.state}*
+
+            Please type in price of NFT`,
+                reply_markup: {
+                    inline_keyboard: [[{ text: '<< Back', callback_data: 'newStart' }]]
+                },
+                parse_mode: 'Markdown'
+            });
+            //update state
+            user!.state.state = 'nftColCA';
+
+            await updateUserState(query.message!.chat!.id, user!.state);
+            break;
+        }
+        no++;
+    }
+}
+
+export async function doBuySell(query: CallbackQuery, _: string) {
+    let user = await getUserByTelegramID(query.message!.chat!.id);
+    let amount = +_;
+    if (isNaN(amount)) {
+        bot.sendMessage(query.message!.chat!.id, 'Insufficent amount!');
+        return;
+    }
+    //store in BigInt Mode
+    user!.state.amount = amount;
+    await bot.sendPhoto(query.message!.chat.id, './imgpsh_fullsize_anim.png', {
+        caption: `
+*${user!.state.isBuy ? `📗` : `📕`} ${user!.state.state}*
+
+Please confirm.
+
+Warning. 
+You should store enough TON in your wallet.
+Each tx need 1 TON extra for ton price.
+and 0.95 TON will be return to your wallet.
+OR tx will be fail.`,
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    {
+                        text: 'Yes',
+                        callback_data: JSON.stringify({ method: 'confirm', data: 'yes' })
+                    },
+                    {
+                        text: 'No',
+                        callback_data: JSON.stringify({ method: 'confirm', data: 'no' })
+                    }
+                ],
+                [{ text: '<< Back', callback_data: 'newStart' }]
+            ]
+        },
+        parse_mode: 'Markdown'
+    });
+    await updateUserState(query.message!.chat!.id, user!.state);
+}
 //main running code here - Buy and sell logic is here :)
 //by 4ura
 export async function handleConfirm(query: CallbackQuery, _: string) {
@@ -220,14 +360,16 @@ export async function handleConfirm(query: CallbackQuery, _: string) {
                     for (const nft of nftInfo[collectionAddress]?.items!) {
                         console.log(nft.address);
                         counter++;
-                        const nftSaleCell = await saleNftTxBuilder(
-                            connector.wallet!.account.address.toString(),
-                            BigInt(user?.state.price! * 10 ** 9 + 11000000),
-                            Address.parseRaw(nft.address).toString(),
-                            Address.parseRaw(nftInfo[collectionAddress]?.owner_address!).toString()
-                        );
 
                         if (user!.state.mode !== 'no') {
+                            const nftSaleCell = await saleNftTxBuilder(
+                                connector.wallet!.account.address.toString(),
+                                BigInt(user?.state.price! * 10 ** 9 + 11000000),
+                                Address.parseRaw(nft.address).toString(),
+                                Address.parseRaw(
+                                    nftInfo[collectionAddress]?.owner_address!
+                                ).toString()
+                            );
                             await sendTransaction(
                                 query.message?.chat.id!,
                                 Address.parseRaw(nft.address).toString(),
@@ -236,6 +378,14 @@ export async function handleConfirm(query: CallbackQuery, _: string) {
                             );
                             await delay(30000);
                         } else {
+                            const nftSaleCell = await saleNftTxBuilder(
+                                user!.walletAddress,
+                                BigInt(user?.state.price! * 10 ** 9 + 11000000),
+                                Address.parseRaw(nft.address).toString(),
+                                Address.parseRaw(
+                                    nftInfo[collectionAddress]?.owner_address!
+                                ).toString()
+                            );
                             internalMessages.push(
                                 beginCell()
                                     .storeUint(0x18, 6) // bounce
@@ -253,8 +403,13 @@ export async function handleConfirm(query: CallbackQuery, _: string) {
                 }
             }
         }
-        if (user?.state.mode === 'no')
+        if (user?.state.mode === 'no') {
             await bulkSend(internalMessages, user?.secretKey!, user?.walletAddress!);
+            bot.sendMessage(
+                query.message!.chat.id,
+                `Tx is sent\nhttps://tonviewer.com/${user!.walletAddress}`
+            );
+        }
     } else {
         handleStartCommand(query.message!);
     }
@@ -355,9 +510,39 @@ export async function handleWithdrawCommand(query: CallbackQuery) {
 
     await replyMessage(
         query.message!,
-        `👛 My Fast Wallet\n\nbalance: ${balance} TON\nPlease type in withdraw amount`,
+        `👛 My Fast Wallet\n\nbalance: ${
+            Number(balance) / 10 ** 9
+        }TON\nPlease type in withdraw Address`,
         [[{ text: '<< Back', callback_data: JSON.stringify({ method: 'showSetting' }) }]]
     );
+}
+export async function nftWithdrawAddress(query: CallbackQuery, _: string) {
+    let user = await getUserByTelegramID(query.message!.chat!.id);
+
+    const nftInfo = await getNFTInfo(user!.walletAddress);
+    for (const collectionRawAddress in nftInfo) {
+        let colName = await getNameFromAddress(Address.parseRaw(collectionRawAddress).toString());
+        let strName = colName?.data.nftCollectionByAddress.name;
+        if (strName === _) {
+            user!.state.nftColCA = Address.parseRaw(collectionRawAddress).toString();
+            await bot.sendPhoto(query.message!.chat.id, './imgpsh_fullsize_anim.png', {
+                caption: `
+*Transfer NFT*
+
+Please type in amount of NFT collection`,
+                reply_markup: {
+                    inline_keyboard: [[{ text: '<< Back', callback_data: 'newStart' }]]
+                },
+                parse_mode: 'Markdown'
+            });
+
+            //update state
+            user!.state.state = 'withdrawNftAmount';
+
+            await updateUserState(query.message!.chat!.id, user!.state);
+            break;
+        }
+    }
 }
 
 export async function handleWithdrawNFTCommand(query: CallbackQuery) {
@@ -366,18 +551,12 @@ export async function handleWithdrawNFTCommand(query: CallbackQuery) {
     await updateUserState(query.message?.chat.id!, user!.state);
     const balance = await client.getBalance(Address.parse(user!.walletAddress));
     //update state
-    let outputNFTstring: string = '';
-    const nftInfo = await getNFTInfo(user!.walletAddress);
-    for (const collectionRawAddress in nftInfo) {
-        outputNFTstring += `<code>${Address.parseRaw(
-            collectionRawAddress.toLowerCase()
-        ).toString()}</code>: ${nftInfo[collectionRawAddress]?.items.length} NFTs\n`;
-    }
+
     await replyMessage(
         query.message!,
         `👛 My Fast Wallet\n\nbalance: ${
             Number(balance) / 10 ** 9
-        } TON\n  NFT Balance:  [Collection CA] : [Number of NFT]\n${outputNFTstring}\n\nPlease type in destination wallet Address`,
+        } TON\n\nPlease type in destination wallet Address`,
         [[{ text: '<< Back', callback_data: JSON.stringify({ method: 'showSetting' }) }]]
     );
 }
@@ -386,18 +565,12 @@ export async function handleShowMyWalletCommand(query: CallbackQuery): Promise<v
     let user = await getUserByTelegramID(query.message?.chat.id!);
     const balance = await client.getBalance(Address.parse(user!.walletAddress));
     console.log(balance);
-    let outputNFTstring: string = '';
-    const nftInfo = await getNFTInfo(user!.walletAddress);
-    for (const collectionRawAddress in nftInfo) {
-        outputNFTstring += `<code>${Address.parseRaw(
-            collectionRawAddress.toLowerCase()
-        ).toString()}</code>: ${nftInfo[collectionRawAddress]?.items.length} NFTs\n`;
-    }
+
     replyMessage(
         query.message!,
         `👛 My Fast Wallet\n\nAddress: <code>${user!.walletAddress}</code>\nbalance: ${
             Number(balance) / 10 ** 9
-        } TON\n NFT Balance:  [Collection CA] : [Number of NFT]\n${outputNFTstring}`,
+        } TON`,
         [
             [
                 { text: '⤵️ Withdraw', callback_data: JSON.stringify({ method: 'withdraw' }) },
